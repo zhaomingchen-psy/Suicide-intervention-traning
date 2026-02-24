@@ -373,6 +373,10 @@ export default function Home() {
   const [roundLoading, setRoundLoading] = useState(false);
   const [roundError, setRoundError] = useState("");
   const [copiedOptionIndex, setCopiedOptionIndex] = useState<number | null>(null);
+  const [polishLoading, setPolishLoading] = useState(false);
+  const [polishedDraft, setPolishedDraft] = useState("");
+  const [polishError, setPolishError] = useState("");
+  const [copiedPolished, setCopiedPolished] = useState(false);
 
   const selectedCase = useMemo(
     () => caseTemplates.find((item) => item.id === selectedCaseId) ?? caseTemplates[0],
@@ -387,6 +391,11 @@ export default function Home() {
   const canSend = useMemo(
     () => input.trim().length > 0 && !loading && Boolean(activeCase) && !sessionEnded,
     [activeCase, input, loading, sessionEnded]
+  );
+
+  const canPolish = useMemo(
+    () => input.trim().length > 0 && !loading && !polishLoading && Boolean(activeCase) && !sessionEnded,
+    [activeCase, input, loading, polishLoading, sessionEnded]
   );
 
   const counselorTurns = useMemo(() => messages.filter((item) => item.role === "user").length, [messages]);
@@ -440,6 +449,17 @@ export default function Home() {
       setTimeout(() => setCopiedOptionIndex(null), 1200);
     } catch {
       setCopiedOptionIndex(null);
+    }
+  }
+
+  async function onCopyPolished() {
+    if (!polishedDraft.trim()) return;
+    try {
+      await navigator.clipboard.writeText(polishedDraft);
+      setCopiedPolished(true);
+      setTimeout(() => setCopiedPolished(false), 1200);
+    } catch {
+      setCopiedPolished(false);
     }
   }
 
@@ -504,6 +524,9 @@ export default function Home() {
     setRoundHistory([]);
     setSelectedRound(null);
     setRoundError("");
+    setPolishedDraft("");
+    setPolishError("");
+    setCopiedPolished(false);
   }
 
   function resetSession() {
@@ -519,6 +542,9 @@ export default function Home() {
     setRoundHistory([]);
     setSelectedRound(null);
     setRoundError("");
+    setPolishedDraft("");
+    setPolishError("");
+    setCopiedPolished(false);
   }
 
   async function onSend(e: FormEvent) {
@@ -531,6 +557,9 @@ export default function Home() {
     setInput("");
     setLoading(true);
     setSessionReport("");
+    setPolishedDraft("");
+    setPolishError("");
+    setCopiedPolished(false);
 
     try {
       const res = await fetch("/api/roleplay", {
@@ -592,6 +621,44 @@ export default function Home() {
       setLastTrace(`error:${message}`);
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function onPolishDraft() {
+    if (!canPolish || !activeCase) return;
+    setPolishLoading(true);
+    setPolishError("");
+    setCopiedPolished(false);
+    try {
+      const res = await fetch("/api/polish", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          draft: input.trim(),
+          messages,
+          caseProfile: activeCase.profile
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error || "Draft polish request failed");
+      }
+
+      const data = (await res.json()) as { polished?: string };
+      const polished = String(data.polished || "").trim();
+      if (!polished) {
+        throw new Error("No polished response returned.");
+      }
+      setPolishedDraft(polished);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setPolishError(message);
+      setPolishedDraft("");
+    } finally {
+      setPolishLoading(false);
     }
   }
 
@@ -878,7 +945,10 @@ export default function Home() {
                 <form className="chat-controls" onSubmit={onSend}>
                   <textarea
                     value={input}
-                    onChange={(e) => setInput(e.target.value)}
+                    onChange={(e) => {
+                      setInput(e.target.value);
+                      setPolishError("");
+                    }}
                     onKeyDown={onInputKeyDown}
                     placeholder="Type your response..."
                     disabled={sessionEnded}
@@ -887,6 +957,24 @@ export default function Home() {
                     {loading ? "Sending..." : "Send"}
                   </button>
                 </form>
+                <div className="draft-tools">
+                  <button type="button" className="light-button polish-btn" onClick={() => void onPolishDraft()} disabled={!canPolish}>
+                    {polishLoading ? "Polishing..." : "Polish current draft"}
+                  </button>
+                  <p className="panel-sub">AI will refine your typed draft below without replacing your original text.</p>
+                </div>
+                {polishError ? <p className="ct-error draft-error">Draft polish error: {polishError}</p> : null}
+                {polishedDraft ? (
+                  <div className="draft-polish-result">
+                    <div className="draft-polish-head">
+                      <h4>Polished response</h4>
+                      <button type="button" className="copy-btn" onClick={() => void onCopyPolished()}>
+                        {copiedPolished ? "Copied" : "Copy"}
+                      </button>
+                    </div>
+                    <p>{polishedDraft}</p>
+                  </div>
+                ) : null}
               </div>
 
               <div className="session-end-row">
