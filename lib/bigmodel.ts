@@ -1,4 +1,4 @@
-import { getModelConfig } from "./model";
+import { getRoleplayModelConfig, type ChatProviderConfig } from "./model";
 
 type ChatMessage = {
   role: "system" | "user" | "assistant";
@@ -14,6 +14,10 @@ type CreateChatResult = {
   text: string;
   finishReason: string;
 };
+
+function buildEndpoint(config: ChatProviderConfig) {
+  return `${config.baseURL.replace(/\/+$/, "")}${config.endpointPath}`;
+}
 
 function joinContentParts(content: unknown): string {
   if (typeof content === "string") {
@@ -126,13 +130,17 @@ function extractFinishReason(payload: unknown): string {
   return "unknown";
 }
 
-export async function createChatCompletion(messages: ChatMessage[], options: ChatOptions) {
-  const { apiKey, model, baseURL } = getModelConfig();
+export async function createChatCompletionForConfig(
+  config: ChatProviderConfig,
+  messages: ChatMessage[],
+  options: ChatOptions
+) {
+  const { apiKey, model } = config;
   if (!apiKey) {
-    throw new Error("Missing BIGMODEL_API_KEY (or OPENAI_API_KEY).");
+    throw new Error(`Missing API key for provider: ${config.provider}.`);
   }
 
-  const endpoint = `${baseURL.replace(/\/+$/, "")}/api/paas/v4/chat/completions`;
+  const endpoint = buildEndpoint(config);
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {
@@ -161,16 +169,28 @@ export async function createChatCompletion(messages: ChatMessage[], options: Cha
   return text;
 }
 
+export async function createChatCompletion(messages: ChatMessage[], options: ChatOptions) {
+  return createChatCompletionForConfig(getRoleplayModelConfig(), messages, options);
+}
+
 export async function createChatCompletionWithMeta(
   messages: ChatMessage[],
   options: ChatOptions
 ): Promise<CreateChatResult> {
-  const { apiKey, model, baseURL } = getModelConfig();
+  return createChatCompletionWithMetaForConfig(getRoleplayModelConfig(), messages, options);
+}
+
+export async function createChatCompletionWithMetaForConfig(
+  config: ChatProviderConfig,
+  messages: ChatMessage[],
+  options: ChatOptions
+): Promise<CreateChatResult> {
+  const { apiKey, model } = config;
   if (!apiKey) {
-    throw new Error("Missing BIGMODEL_API_KEY (or OPENAI_API_KEY).");
+    throw new Error(`Missing API key for provider: ${config.provider}.`);
   }
 
-  const endpoint = `${baseURL.replace(/\/+$/, "")}/api/paas/v4/chat/completions`;
+  const endpoint = buildEndpoint(config);
   const response = await fetch(endpoint, {
     method: "POST",
     headers: {

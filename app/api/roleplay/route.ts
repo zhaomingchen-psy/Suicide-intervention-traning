@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createChatCompletionWithMeta } from "../../../lib/bigmodel";
-import { getModelConfig } from "../../../lib/model";
+import { getRoleplayModelConfig } from "../../../lib/model";
 
 type ClientMessage = {
   role: "user" | "assistant";
@@ -85,10 +85,10 @@ No lists, no markdown, no explanations.
 }
 
 export async function POST(req: Request) {
-  const { apiKey, model, baseURL } = getModelConfig();
+  const { apiKey, model, baseURL, endpointPath } = getRoleplayModelConfig();
   if (!apiKey) {
     return NextResponse.json(
-      { error: "Missing BIGMODEL_API_KEY (or OPENAI_API_KEY). Configure .env.local and restart." },
+      { error: "Missing BIGMODEL_API_KEY. Configure .env.local or Vercel env and restart." },
       { status: 500 }
     );
   }
@@ -160,7 +160,7 @@ export async function POST(req: Request) {
         source: "model",
         calledApi: true,
         model,
-        endpoint: `${baseURL.replace(/\/+$/, "")}/api/paas/v4/chat/completions`,
+        endpoint: `${baseURL.replace(/\/+$/, "")}${endpointPath}`,
         finishReason,
         retried,
         attempt

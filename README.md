@@ -26,9 +26,20 @@ cp .env.local.example .env.local
 BIGMODEL_API_KEY=你的真实key
 BIGMODEL_MODEL=GLM-4.7-FlashX
 BIGMODEL_BASE_URL=https://open.bigmodel.cn
+
+DEEPSEEK_API_KEY=你的DeepSeek真实key
+DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
 请不要把真实 key 写进仓库文件或截图里。
+
+当前模型分工：
+
+- `roleplay` 使用智谱（BigModel）
+- `round-feedback` 使用 DeepSeek
+- `polish` 使用 DeepSeek
+- `report` 使用 DeepSeek
 
 ## 3) 运行
 
@@ -53,8 +64,14 @@ npm run dev
   - `BIGMODEL_API_KEY`
   - `BIGMODEL_MODEL`（可选）
   - `BIGMODEL_BASE_URL`（可选）
+  - `DEEPSEEK_API_KEY`
+  - `DEEPSEEK_MODEL`（可选）
+  - `DEEPSEEK_BASE_URL`（可选）
 
 ## API 说明
 
 - `POST /api/roleplay`：AI 扮演来访者，返回来访者下一句回应
 - `POST /api/feedback`：根据整段对话生成督导反馈
+- `POST /api/round-feedback`：生成本轮反馈与技能评分
+- `POST /api/polish`：润色咨询师输入草稿
+- `POST /api/report`：生成整场训练总结报告

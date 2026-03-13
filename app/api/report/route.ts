@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { createChatCompletionWithMeta } from "../../../lib/bigmodel";
-import { getModelConfig } from "../../../lib/model";
+import { createChatCompletionWithMetaForConfig } from "../../../lib/bigmodel";
+import { getFeedbackModelConfig } from "../../../lib/model";
 
 type ClientMessage = {
   role: "user" | "assistant";
@@ -114,10 +114,11 @@ function formatReport(report: ReportJson) {
 }
 
 export async function POST(req: Request) {
-  const { apiKey } = getModelConfig();
+  const modelConfig = getFeedbackModelConfig();
+  const { apiKey } = modelConfig;
   if (!apiKey) {
     return NextResponse.json(
-      { error: "Missing BIGMODEL_API_KEY (or OPENAI_API_KEY). Configure .env.local and restart." },
+      { error: "Missing DEEPSEEK_API_KEY. Configure .env.local or Vercel env and restart." },
       { status: 500 }
     );
   }
@@ -212,11 +213,11 @@ Return strict JSON with the same 5 keys only. Very short bullets.
     let retried = false;
     let attempt = 1;
 
-    try {
-      const first = await createChatCompletionWithMeta(promptMessages, {
-        temperature: 0.1,
-        maxTokens: 2600
-      });
+      try {
+        const first = await createChatCompletionWithMetaForConfig(modelConfig, promptMessages, {
+          temperature: 0.1,
+          maxTokens: 2600
+        });
       finishReason = first.finishReason;
       reportJson = sanitizeReport(extractJson(first.text));
     } catch (error) {
@@ -226,9 +227,9 @@ Return strict JSON with the same 5 keys only. Very short bullets.
       }
 
       retried = true;
-      attempt = 2;
-      try {
-        const second = await createChatCompletionWithMeta(compactPromptMessages, {
+        attempt = 2;
+        try {
+        const second = await createChatCompletionWithMetaForConfig(modelConfig, compactPromptMessages, {
           temperature: 0.1,
           maxTokens: 3600
         });
@@ -241,7 +242,7 @@ Return strict JSON with the same 5 keys only. Very short bullets.
         }
 
         attempt = 3;
-        const third = await createChatCompletionWithMeta(tinyPromptMessages, {
+        const third = await createChatCompletionWithMetaForConfig(modelConfig, tinyPromptMessages, {
           temperature: 0.1,
           maxTokens: 4600
         });
@@ -254,6 +255,8 @@ Return strict JSON with the same 5 keys only. Very short bullets.
       report: limitReportLength(formatReport(reportJson), 3800),
       meta: {
         calledApi: true,
+        provider: modelConfig.provider,
+        model: modelConfig.model,
         finishReason,
         retried,
         attempt

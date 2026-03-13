@@ -330,6 +330,11 @@ type RoundSnapshot = {
   coach: RoundCoach;
 };
 
+type FeedbackCoachMessage = {
+  role: "user" | "assistant";
+  content: string;
+};
+
 const emptyRoundCoach: RoundCoach = {
   summary: "Waiting for first round...",
   suggestion: "Start with empathy, then ask one clear open-ended question.",
@@ -377,6 +382,10 @@ export default function Home() {
   const [polishedDraft, setPolishedDraft] = useState("");
   const [polishError, setPolishError] = useState("");
   const [copiedPolished, setCopiedPolished] = useState(false);
+  const [feedbackQuestion, setFeedbackQuestion] = useState("");
+  const [feedbackChatByRound, setFeedbackChatByRound] = useState<Record<number, FeedbackCoachMessage[]>>({});
+  const [feedbackChatLoading, setFeedbackChatLoading] = useState(false);
+  const [feedbackChatError, setFeedbackChatError] = useState("");
 
   const selectedCase = useMemo(
     () => caseTemplates.find((item) => item.id === selectedCaseId) ?? caseTemplates[0],
@@ -415,6 +424,16 @@ export default function Home() {
     if (selectedRound === null) return roundHistory[roundHistory.length - 1];
     return roundHistory.find((item) => item.round === selectedRound) ?? roundHistory[roundHistory.length - 1];
   }, [roundHistory, selectedRound]);
+
+  const displayedFeedbackChat = useMemo(() => {
+    if (!displayedRound) return [];
+    return feedbackChatByRound[displayedRound.round] ?? [];
+  }, [displayedRound, feedbackChatByRound]);
+
+  const canAskFeedback = useMemo(
+    () => Boolean(activeCase) && Boolean(displayedRound) && feedbackQuestion.trim().length > 0 && !feedbackChatLoading,
+    [activeCase, displayedRound, feedbackQuestion, feedbackChatLoading]
+  );
 
   const displayedRoundCoach = displayedRound?.coach ?? latestRoundCoach;
 
@@ -463,6 +482,74 @@ export default function Home() {
     }
   }
 
+  function getPriorMessagesForRound(targetRound: number) {
+    const prior: ChatMessage[] = [];
+    let userTurns = 0;
+
+    for (const message of messages) {
+      if (message.role === "user") {
+        userTurns += 1;
+        if (userTurns === targetRound) {
+          break;
+        }
+      }
+      prior.push(message);
+    }
+
+    return prior;
+  }
+
+  async function onAskFeedback(e: FormEvent) {
+    e.preventDefault();
+    if (!activeCase || !displayedRound || !canAskFeedback) return;
+
+    const question = feedbackQuestion.trim();
+    const round = displayedRound.round;
+    const history = feedbackChatByRound[round] ?? [];
+    setFeedbackChatLoading(true);
+    setFeedbackChatError("");
+
+    try {
+      const res = await fetch("/api/feedback-chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          question,
+          priorMessages: getPriorMessagesForRound(round),
+          counselorMessage: displayedRound.userMessage,
+          clientReply: displayedRound.clientMessage,
+          caseProfile: activeCase.profile,
+          roundCoach: displayedRound.coach,
+          history
+        })
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error || "Feedback follow-up request failed");
+      }
+
+      const data = (await res.json()) as { answer?: string };
+      const answer = String(data.answer || "").trim();
+      if (!answer) {
+        throw new Error("No feedback answer returned.");
+      }
+
+      setFeedbackChatByRound((prev) => ({
+        ...prev,
+        [round]: [...history, { role: "user", content: question }, { role: "assistant", content: answer }]
+      }));
+      setFeedbackQuestion("");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      setFeedbackChatError(message);
+    } finally {
+      setFeedbackChatLoading(false);
+    }
+  }
+
   async function generateRoundFeedback(
     fullMessages: ChatMessage[],
     caseProfile: CaseProfile,
@@ -482,7 +569,10 @@ export default function Home() {
         body: JSON.stringify({
           messages: fullMessages,
           caseProfile,
-          previousFeedback: previousSummary
+          previousFeedback: previousSummary,
+          priorMessages: fullMessages.slice(0, -2),
+          counselorMessage: userMessage,
+          clientReply: clientMessage
         })
       });
 
@@ -527,6 +617,9 @@ export default function Home() {
     setPolishedDraft("");
     setPolishError("");
     setCopiedPolished(false);
+    setFeedbackQuestion("");
+    setFeedbackChatByRound({});
+    setFeedbackChatError("");
   }
 
   function resetSession() {
@@ -545,6 +638,9 @@ export default function Home() {
     setPolishedDraft("");
     setPolishError("");
     setCopiedPolished(false);
+    setFeedbackQuestion("");
+    setFeedbackChatByRound({});
+    setFeedbackChatError("");
   }
 
   async function onSend(e: FormEvent) {
@@ -560,6 +656,7 @@ export default function Home() {
     setPolishedDraft("");
     setPolishError("");
     setCopiedPolished(false);
+    setFeedbackChatError("");
 
     try {
       const res = await fetch("/api/roleplay", {
@@ -1032,6 +1129,41 @@ export default function Home() {
                 <p>
                   <strong>Needs improvement:</strong> {displayedRoundCoach.current_turn_feedback.needs_improvement}
                 </p>
+              </div>
+
+              <div className="panel ct-card ct-accent slate">
+                <h3>Ask About This Feedback</h3>
+                <p className="panel-sub">
+                  {displayedRound
+                    ? `Round ${displayedRound.round}. Ask for clarification or better alternatives before replying again.`
+                    : "Select a round to discuss its feedback."}
+                </p>
+                <div className="feedback-chat-log">
+                  {displayedFeedbackChat.length ? (
+                    displayedFeedbackChat.map((item, idx) => (
+                      <div key={`${item.role}-${idx}`} className={`feedback-chat-bubble ${item.role}`}>
+                        <strong>{item.role === "user" ? "You" : "Coach"}:</strong> {item.content}
+                      </div>
+                    ))
+                  ) : (
+                    <p className="panel-sub">No feedback questions yet for this round.</p>
+                  )}
+                </div>
+                <form className="feedback-chat-form" onSubmit={onAskFeedback}>
+                  <textarea
+                    value={feedbackQuestion}
+                    onChange={(e) => {
+                      setFeedbackQuestion(e.target.value);
+                      setFeedbackChatError("");
+                    }}
+                    placeholder="Ask why the feedback said something, or ask for 2 better options..."
+                    disabled={!displayedRound}
+                  />
+                  <button type="submit" className="light-button" disabled={!canAskFeedback}>
+                    {feedbackChatLoading ? "Thinking..." : "Ask coach"}
+                  </button>
+                </form>
+                {feedbackChatError ? <p className="ct-error">{feedbackChatError}</p> : null}
               </div>
 
               {sessionReport ? (

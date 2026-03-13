@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { createChatCompletionWithMeta } from "../../../lib/bigmodel";
-import { getModelConfig } from "../../../lib/model";
+import { createChatCompletionWithMetaForConfig } from "../../../lib/bigmodel";
+import { getFeedbackModelConfig } from "../../../lib/model";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -35,10 +35,11 @@ function isLengthError(message: string) {
 }
 
 export async function POST(req: Request) {
-  const { apiKey } = getModelConfig();
+  const modelConfig = getFeedbackModelConfig();
+  const { apiKey } = modelConfig;
   if (!apiKey) {
     return NextResponse.json(
-      { error: "Missing BIGMODEL_API_KEY (or OPENAI_API_KEY). Configure .env.local and restart." },
+      { error: "Missing DEEPSEEK_API_KEY. Configure .env.local or Vercel env and restart." },
       { status: 500 }
     );
   }
@@ -140,7 +141,7 @@ ${draft}
     for (let i = 0; i < attemptPlans.length; i++) {
       const plan = attemptPlans[i];
       try {
-        const result = await createChatCompletionWithMeta(plan.messages, {
+        const result = await createChatCompletionWithMetaForConfig(modelConfig, plan.messages, {
           temperature: plan.temperature,
           maxTokens: plan.maxTokens
         });
@@ -166,6 +167,8 @@ ${draft}
       polished,
       meta: {
         calledApi: true,
+        provider: modelConfig.provider,
+        model: modelConfig.model,
         finishReason,
         retried,
         attempt
@@ -176,4 +179,3 @@ ${draft}
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
-

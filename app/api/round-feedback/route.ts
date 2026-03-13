@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { createChatCompletionWithMeta } from "../../../lib/bigmodel";
-import { getModelConfig } from "../../../lib/model";
+import { createChatCompletionWithMetaForConfig } from "../../../lib/bigmodel";
+import { getFeedbackModelConfig } from "../../../lib/model";
 
 type ClientMessage = {
   role: "user" | "assistant";
@@ -40,6 +40,25 @@ type RoundCoach = {
   current_turn_feedback: CurrentTurnFeedback;
   skill_scores: SkillScores;
 };
+
+function classifyTechniqueFromCounselorMessage(text: string): RoundCoach["technique_used"] {
+  const lowered = text.toLowerCase();
+
+  if (/(suicid|kill yourself|harm yourself|hurt yourself|self-harm|plan|means|method|intent|attempt)/.test(lowered)) {
+    return "C. Suicide Risk Assessment";
+  }
+  if (/(stay safe|safe tonight|safe right now|remove access|911|emergency|er\\b|hospital|crisis line|can you stay safe)/.test(lowered)) {
+    return "D. Establishing Safety / Mitigating Risk";
+  }
+  if (/(therap|psychiat|doctor|referr|resource|treatment|services?|provider|support group)/.test(lowered)) {
+    return "E. Resources, Referrals, and Treatment Promotion";
+  }
+  if (/(what have you tried|what helped|what didn't help|options|next step|small step|could we|would it help|action plan)/.test(lowered)) {
+    return "B. Collaborative Problem-Solving";
+  }
+
+  return "A. Fostering Engagement / Rapport";
+}
 
 function selectRecentMessages(messages: ClientMessage[], keep = 12) {
   if (messages.length <= keep) return messages;
@@ -90,7 +109,7 @@ function clampScore(value: unknown) {
   return Math.max(0, Math.min(100, Math.round(num)));
 }
 
-function sanitizePayload(payload: unknown): RoundCoach {
+function sanitizePayload(payload: unknown, counselorMessage = ""): RoundCoach {
   const data = (payload || {}) as Record<string, unknown>;
   const scores = (data.skill_scores || {}) as Record<string, unknown>;
 
@@ -129,7 +148,9 @@ function sanitizePayload(payload: unknown): RoundCoach {
     recommended_options: options.length ? options : ["Could not generate response options this turn."],
     emotion: String(data.emotion || "Not clear").trim(),
     crisis_level: normalizeLevel(data.crisis_level),
-    technique_used: normalizeTechnique(data.technique_used),
+    technique_used: counselorMessage
+      ? classifyTechniqueFromCounselorMessage(counselorMessage)
+      : normalizeTechnique(data.technique_used),
     current_turn_feedback: {
       did_well: String((data.current_turn_feedback as Record<string, unknown> | undefined)?.did_well || "N/A")
         .trim()
@@ -193,10 +214,11 @@ function buildLocalFallback(messages: ClientMessage[], previousFeedback: string)
 }
 
 export async function POST(req: Request) {
-  const { apiKey } = getModelConfig();
+  const modelConfig = getFeedbackModelConfig();
+  const { apiKey } = modelConfig;
   if (!apiKey) {
     return NextResponse.json(
-      { error: "Missing BIGMODEL_API_KEY (or OPENAI_API_KEY). Configure .env.local and restart." },
+      { error: "Missing DEEPSEEK_API_KEY. Configure .env.local or Vercel env and restart." },
       { status: 500 }
     );
   }
@@ -206,25 +228,33 @@ export async function POST(req: Request) {
       messages?: ClientMessage[];
       caseProfile?: CaseProfile;
       previousFeedback?: string;
+      priorMessages?: ClientMessage[];
+      counselorMessage?: string;
+      clientReply?: string;
     };
 
     const messages = body?.messages ?? [];
     const caseProfile = body?.caseProfile ?? {};
     const previousFeedback = body?.previousFeedback ?? "N/A - session start";
+    const priorMessages = Array.isArray(body?.priorMessages) ? body.priorMessages : messages.slice(0, -2);
+    const counselorMessage =
+      String(body?.counselorMessage || [...messages].reverse().find((item) => item.role === "user")?.content || "").trim();
+    const clientReply =
+      String(body?.clientReply || [...messages].reverse().find((item) => item.role === "assistant")?.content || "").trim();
 
     if (!Array.isArray(messages) || messages.length < 2) {
       return NextResponse.json({ error: "Need at least one full dialogue turn." }, { status: 400 });
     }
 
-    const transcript = transcriptFromMessages(selectRecentMessages(messages, 12));
-    const compactTranscript = transcriptFromMessages(selectRecentMessages(messages, 8));
+    const transcript = transcriptFromMessages(selectRecentMessages(priorMessages, 10));
+    const compactTranscript = transcriptFromMessages(selectRecentMessages(priorMessages, 6));
 
     const promptMessages = [
       {
         role: "system" as const,
         content: `
 You are a crisis counseling training coach.
-Analyze the current round and return ONLY valid JSON.
+Analyze one counselor turn and return ONLY valid JSON.
 
 JSON schema:
 {
@@ -255,6 +285,12 @@ Scoring rule:
 - Risk assessment and safety planning should stay low unless explicitly asked in dialogue.
 - "recommended_options" must be directly usable counselor utterances (not meta advice).
 - "current_turn_feedback" must evaluate only counselor performance in THIS turn.
+- Judge the counselor turn using only information available before the counselor spoke.
+- You may use the client reply after the counselor turn only to judge whether the counselor invited useful disclosure.
+- Do NOT criticize the counselor for failing to address details that were revealed only after the counselor spoke.
+- Do NOT introduce hidden dynamics, clinical formulations, or phrases that are not explicitly stated in the provided text.
+- If a concept is not literally present in the provided text, do not mention it.
+- "did_well" and "needs_improvement" must be about the counselor's behavior, never about what the client disclosed.
 - Classify technique_used using these definitions:
   A. Fostering Engagement / Rapport:
     - welcoming nonjudgmental tone; validates/normalizes feelings; empathy/compassion;
@@ -284,8 +320,14 @@ Case theme: ${caseProfile.title || "Not provided"}
 Risk hint: ${caseProfile.riskLevel || "Not provided"}
 Previous round feedback: ${previousFeedback}
 
-Recent transcript:
-${transcript}
+Context before counselor turn:
+${transcript || "No prior context."}
+
+Counselor turn to evaluate:
+${counselorMessage || "Not provided"}
+
+Client reply after counselor turn:
+${clientReply || "Not provided"}
 `.trim()
       }
     ];
@@ -299,6 +341,7 @@ Return ONLY valid JSON with keys:
 summary, suggestion, recommended_options, emotion, crisis_level, technique_used, current_turn_feedback, skill_scores.
 recommended_options must be 2 direct copy-ready counselor scripts.
 current_turn_feedback must be an object with did_well and needs_improvement for THIS turn.
+Do not mention information revealed only after the counselor turn as if the counselor should already have known it.
 No markdown. No extra keys.
 `.trim()
       },
@@ -307,8 +350,12 @@ No markdown. No extra keys.
         content: `
 Case theme: ${caseProfile.title || "Not provided"}
 Risk hint: ${caseProfile.riskLevel || "Not provided"}
-Recent transcript:
-${compactTranscript}
+Before counselor turn:
+${compactTranscript || "No prior context."}
+Counselor turn:
+${counselorMessage || "Not provided"}
+Client reply:
+${clientReply || "Not provided"}
 `.trim()
       }
     ];
@@ -322,11 +369,12 @@ Output one JSON object with keys:
 summary, suggestion, recommended_options, emotion, crisis_level, technique_used, current_turn_feedback, skill_scores.
 recommended_options must contain exactly 2 short counselor scripts.
 current_turn_feedback must be object: { did_well, needs_improvement }.
+Do not reference facts first disclosed after the counselor turn.
 `.trim()
       },
       {
         role: "user" as const,
-        content: compactTranscript
+        content: `Before: ${compactTranscript || "No prior context."}\nCounselor: ${counselorMessage}\nClient: ${clientReply}`
       }
     ];
 
@@ -350,12 +398,12 @@ current_turn_feedback must be object: { did_well, needs_improvement }.
     for (let i = 0; i < attemptPlans.length; i++) {
       const plan = attemptPlans[i];
       try {
-        const result = await createChatCompletionWithMeta(plan.messages, {
+        const result = await createChatCompletionWithMetaForConfig(modelConfig, plan.messages, {
           temperature: plan.temperature,
           maxTokens: plan.maxTokens
         });
         finishReason = result.finishReason;
-        parsed = sanitizePayload(extractJson(result.text));
+        parsed = sanitizePayload(extractJson(result.text), counselorMessage);
         if (i > 0) {
           retried = true;
         }
@@ -385,6 +433,8 @@ current_turn_feedback must be object: { did_well, needs_improvement }.
       coach: parsed,
       meta: {
         calledApi: true,
+        provider: modelConfig.provider,
+        model: modelConfig.model,
         finishReason,
         retried,
         jsonRetried,
